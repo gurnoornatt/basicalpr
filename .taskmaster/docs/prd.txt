@@ -1,0 +1,67 @@
+Below is a concise, end-to-end Product Requirements Document (PRD) for a zero-cost macOS proof-of-concept LPR system that stores every plate it sees in a local database and lets you review hits in a tiny browser dashboard.
+
+1. Vision & Goals
+Item	Detail
+Problem	You need evidence that a laptop-only LPR pipeline can detect, read and log licence plates reliably before investing in hardware.
+Goal	Build a 100 % free PoC that runs on a MacBook M3, stores plate hits, shows them in a web page, and sends "hot-car" alerts.
+Success Metric (PoC)	≥ 90 % plate-read accuracy at 5 – 10 ft in daylight; database row created < 1 s after detection; dashboard viewable at http://localhost:8000/.
+
+2. Personas
+Persona	Need
+Owner/Developer	Install quickly, tweak code, verify accuracy.
+Security-Officer (optional)	View last N plates and hot-list hits, no CLI skills needed.
+
+3. Functional Requirements
+Live Detection – Using built-in webcam, detect vehicles/plates, OCR text.
+
+Hot-List Match – Compare plate to editable hotlist.csv; flag if matched.
+
+Persistent Storage – Insert each detection into hits.db (SQLite).
+
+Dashboard – Simple web UI showing last 100 rows, thumbnail image, hot-flag.
+
+Alerting – Print to terminal (PoC) or send SMS (Twilio key optional).
+
+Auto-Start Script – One command (./run.sh) boots detector + dashboard.
+
+4. Non-Functional Requirements
+Area	Target
+Runtime env.	macOS 14+, Python 3.10+
+Latency	< 300 ms frame→DB insert
+Storage Retention	Keep plate images 30 days, then auto-purge
+Privacy	All data local; no cloud unless Twilio enabled
+
+5. System Architecture (PoC)
+┌────────(Laptop Webcam)────────┐
+│   OpenCV frame stream (30 FPS)│
+└──────────────┬───────────────┘
+               ▼
+        YOLOv8n detector
+               ▼
+        Plate crop → EasyOCR
+               ▼
+        JSON hit {ts, plate, img}
+               ▼
+       SQLite (hits.db)
+               ▲
+    FastAPI dashboard (port 8000)
+6. Database Schema (SQLite)
+CREATE TABLE hits(
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts     TEXT,          -- ISO 8601 timestamp
+    plate  TEXT,          -- OCR text
+    image  TEXT,          -- file path to JPEG
+    alert  INTEGER        -- 1 if in hotlist
+);
+CREATE INDEX idx_plate ON hits(plate);
+7. API / Dashboard
+Route	Method	Description
+/hits	GET (JSON)	Returns last 100 rows (SELECT … ORDER BY ts DESC LIMIT 100).
+/img/{name}	GET	Serves JPEG from plates/ folder.
+/	GET (HTML)	Table view auto-refreshing every 5 s.
+
+8. Code Modules
+File	Purpose
+alpr.py	Main loop: webcam → YOLO v8 → EasyOCR → DB insert → optional SMS.
+update_hotlist.py	Download / parse stolen-plate CSV into hotlist.csv.
+dashboar... 
