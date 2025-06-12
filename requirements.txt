@@ -1,0 +1,23 @@
+# LPR System Dependencies
+# Computer Vision and ML
+opencv-python-headless==4.8.1.78
+ultralytics==8.0.196
+
+# OCR
+easyocr==1.7.0
+
+# Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Database (sqlite3 is built into Python, no need to install)
+
+# HTTP requests
+requests==2.31.0
+
+# Optional alerting
+twilio==8.10.0
+
+# Additional useful packages
+pillow==10.1.0
+numpy==1.24.4 
