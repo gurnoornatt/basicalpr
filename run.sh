@@ -37,7 +37,7 @@ fi
 # Initialize database if it doesn't exist
 if [ ! -f "hits.db" ]; then
     echo "Initializing database..."
-    python3 -c "from alpr import LPRSystem; lpr = LPRSystem(); print('Database initialized')"
+    python3 -c "from fast_alpr_system import FastALPRSystem; lpr = FastALPRSystem(); print('Database initialized')"
 fi
 
 echo "✅ Setup complete!"
@@ -80,7 +80,7 @@ echo "⚠️  Press Ctrl+C to stop the system"
 echo ""
 
 # Start detector in foreground
-python3 alpr.py &
+python3 main_fastalpr.py &
 DETECTOR_PID=$!
 
 # Wait for processes

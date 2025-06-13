@@ -274,6 +274,81 @@ class DatabaseManager:
         # so no persistent connection to close
         pass
 
+    def add_detection(self, plate_text: str, confidence: float, timestamp, image_path: str = None) -> bool:
+        """
+        Add a license plate detection to the database.
+        This method provides compatibility with the ALPR system.
+        
+        Args:
+            plate_text: The detected license plate text
+            confidence: OCR confidence score (0.0 to 1.0)
+            timestamp: ISO 8601 timestamp string or datetime object
+            image_path: Optional path to saved plate image
+            
+        Returns:
+            bool: True if insertion successful, False otherwise
+        """
+        try:
+            # Convert timestamp to string if needed
+            if hasattr(timestamp, 'isoformat'):
+                # It's a datetime object
+                timestamp_str = timestamp.isoformat()
+            elif isinstance(timestamp, (int, float)):
+                # It's a Unix timestamp
+                from datetime import datetime
+                timestamp_str = datetime.fromtimestamp(timestamp).isoformat()
+            else:
+                # Assume it's already a string
+                timestamp_str = str(timestamp)
+            
+            # Generate image path if not provided
+            if image_path is None:
+                # Create plates directory if it doesn't exist
+                plates_dir = "plates"
+                if not os.path.exists(plates_dir):
+                    os.makedirs(plates_dir)
+                
+                # Generate filename based on timestamp and plate
+                safe_timestamp = timestamp_str.replace(':', '-').replace('T', '_')
+                safe_plate = ''.join(c for c in plate_text if c.isalnum())
+                image_path = f"{plates_dir}/{safe_timestamp}_{safe_plate}.jpg"
+            
+            # Check if plate is in hotlist (alert status)
+            alert_status = 1 if self.is_hotlisted(plate_text) else 0
+            
+            # Use existing insert_hit method
+            success = self.insert_hit(timestamp_str, plate_text, image_path, alert_status)
+            
+            if success:
+                print(f"✅ Detection saved: {plate_text} (confidence: {confidence:.2f})")
+            else:
+                print(f"❌ Failed to save detection: {plate_text}")
+                
+            return success
+            
+        except Exception as e:
+            print(f"Error in add_detection: {e}")
+            return False
+
+    def is_hotlisted(self, plate_text: str) -> bool:
+        """
+        Check if a license plate is on the hotlist.
+        
+        Args:
+            plate_text: The license plate text to check
+            
+        Returns:
+            bool: True if plate is on hotlist, False otherwise
+        """
+        try:
+            # For now, return False since we don't have hotlist functionality implemented
+            # This can be enhanced later to check against a hotlist file or database table
+            return False
+            
+        except Exception as e:
+            print(f"Error checking hotlist: {e}")
+            return False
+
 
 # Convenience functions for backward compatibility and ease of use
 def init_db():
