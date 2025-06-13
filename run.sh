@@ -56,9 +56,9 @@ cleanup() {
 # Set up trap to cleanup on script exit
 trap cleanup SIGINT SIGTERM
 
-# Start dashboard in background
+# Start dashboard in background using uvicorn
 echo "🌐 Starting dashboard server at http://localhost:8000..."
-python3 dashboard.py --host localhost --port 8000 &
+python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8000 &
 DASHBOARD_PID=$!
 
 # Wait a moment for dashboard to start

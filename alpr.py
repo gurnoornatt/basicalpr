@@ -9,9 +9,14 @@ import sqlite3
 import easyocr
 import os
 import json
+import time
 from datetime import datetime
 from ultralytics import YOLO
 import argparse
+from database import DatabaseManager
+from webcam_capture import WebcamCapture
+from plate_detector import PlateDetector
+from plate_ocr import PlateOCR
 
 class LPRSystem:
     def __init__(self, db_path="hits.db", plates_dir="plates", hotlist_path="hotlist.csv"):
@@ -19,47 +24,26 @@ class LPRSystem:
         self.plates_dir = plates_dir
         self.hotlist_path = hotlist_path
         
-        # Initialize database
-        self.init_database()
+        # Initialize database using the new DatabaseManager
+        self.db_manager = DatabaseManager(db_path)
         
         # Create plates directory
         os.makedirs(self.plates_dir, exist_ok=True)
         
-        # Initialize YOLOv8 model (lazy loading to avoid initialization issues)
-        print("Loading YOLOv8 model...")
-        self.yolo_model = None  # Will be loaded on first use
+        # Initialize advanced plate detector
+        print("Initializing PlateDetector...")
+        self.plate_detector = PlateDetector()
         
-        # Initialize EasyOCR (lazy loading)
-        print("Initializing EasyOCR...")
-        self.ocr_reader = None  # Will be loaded on first use
+        # Initialize enhanced OCR module
+        print("Initializing PlateOCR...")
+        self.plate_ocr = PlateOCR(confidence_threshold=0.5)
         
-        # Load hotlist
-        self.hotlist = self.load_hotlist()
+        # Skip hotlist loading (Task 6 skipped)
+        self.hotlist = set()  # Empty set since we're not using hotlist
         
         print("LPR System initialized successfully!")
     
-    def init_database(self):
-        """Initialize SQLite database with required schema"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Create hits table as per PRD schema
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS hits(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT,
-                plate TEXT,
-                image TEXT,
-                alert INTEGER
-            )
-        ''')
-        
-        # Create index for faster plate lookups
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_plate ON hits(plate)')
-        
-        conn.commit()
-        conn.close()
-        print(f"Database initialized: {self.db_path}")
+    # Database initialization is now handled by DatabaseManager in __init__
     
     def load_hotlist(self):
         """Load hotlist from CSV file"""
@@ -74,54 +58,36 @@ class LPRSystem:
         return hotlist
     
     def detect_plates(self, frame):
-        """Detect license plates in frame using YOLOv8"""
-        # Lazy load YOLO model on first use
-        if self.yolo_model is None:
-            import torch
-            # Set weights_only=False to handle PyTorch 2.6+ compatibility
-            torch.serialization._WEIGHTS_ONLY_DEFAULT = False
-            self.yolo_model = YOLO('yolov8n.pt')
-        
-        # For now, we'll use a simple vehicle detection approach
-        # In a full implementation, you'd use a specialized plate detection model
-        results = self.yolo_model(frame, classes=[2, 3, 5, 7])  # car, motorcycle, bus, truck
-        
-        plate_crops = []
-        for result in results:
-            boxes = result.boxes
-            if boxes is not None:
-                for box in boxes:
-                    # Extract bounding box coordinates
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    
-                    # Crop the detected vehicle region
-                    crop = frame[int(y1):int(y2), int(x1):int(x2)]
-                    if crop.size > 0:
-                        plate_crops.append(crop)
-        
-        return plate_crops
+        """Detect license plates in frame using advanced PlateDetector"""
+        try:
+            # Use the new PlateDetector for more accurate detection
+            plate_detections = self.plate_detector.detect_plates(frame)
+            
+            # Extract just the plate crops for backward compatibility
+            plate_crops = []
+            for plate_crop, detection_info in plate_detections:
+                plate_crops.append(plate_crop)
+            
+            return plate_crops
+            
+        except Exception as e:
+            print(f"Plate detection error: {e}")
+            return []
     
     def ocr_plate_text(self, plate_crop):
-        """Extract text from plate crop using EasyOCR"""
+        """Extract text from plate crop using enhanced PlateOCR"""
         try:
-            # Lazy load OCR reader on first use
-            if self.ocr_reader is None:
-                self.ocr_reader = easyocr.Reader(['en'])
+            # Use the enhanced OCR module
+            result = self.plate_ocr.read_plate(plate_crop)
             
-            results = self.ocr_reader.readtext(plate_crop)
-            
-            # Filter and clean results
-            plate_texts = []
-            for (bbox, text, confidence) in results:
-                if confidence > 0.5 and len(text) >= 3:  # Minimum confidence and length
-                    # Clean the text (remove spaces, special chars)
-                    clean_text = ''.join(c.upper() for c in text if c.isalnum())
-                    if clean_text:
-                        plate_texts.append((clean_text, confidence))
-            
-            # Return the most confident result
-            if plate_texts:
-                return max(plate_texts, key=lambda x: x[1])[0]
+            if result and result.get('text'):
+                # Return the text along with additional info for debugging
+                plate_text = result['text']
+                confidence = result.get('confidence', 0)
+                processing_time = result.get('processing_time_ms', 0)
+                
+                print(f"OCR: '{plate_text}' (conf: {confidence:.3f}, time: {processing_time:.1f}ms)")
+                return plate_text
             
         except Exception as e:
             print(f"OCR error: {e}")
@@ -129,79 +95,127 @@ class LPRSystem:
         return None
     
     def save_detection(self, plate_text, image_path, is_alert):
-        """Save detection to database"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
+        """Save detection to database using DatabaseManager"""
         timestamp = datetime.now().isoformat()
         
-        cursor.execute('''
-            INSERT INTO hits (ts, plate, image, alert)
-            VALUES (?, ?, ?, ?)
-        ''', (timestamp, plate_text, image_path, int(is_alert)))
+        success = self.db_manager.insert_hit(
+            timestamp, 
+            plate_text, 
+            image_path, 
+            int(is_alert)
+        )
         
-        conn.commit()
-        conn.close()
-        
-        print(f"Saved detection: {plate_text} {'[ALERT]' if is_alert else ''}")
+        if success:
+            print(f"💾 Saved to database: {plate_text}")
+        else:
+            print(f"❌ Failed to save detection: {plate_text}")
     
     def save_plate_image(self, plate_crop, plate_text):
-        """Save plate crop image to disk"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_{plate_text}.jpg"
-        image_path = os.path.join(self.plates_dir, filename)
-        
-        cv2.imwrite(image_path, plate_crop)
-        return image_path
+        """Save plate crop image to disk with error handling and console feedback"""
+        try:
+            # Ensure plates directory exists
+            os.makedirs(self.plates_dir, exist_ok=True)
+            
+            # Create timestamp and clean filename
+            timestamp = int(time.time())
+            # Clean plate text for filename (remove special chars)
+            clean_plate = "".join(c for c in plate_text if c.isalnum())
+            filename = f"{timestamp}_{clean_plate}.jpg"
+            image_path = os.path.join(self.plates_dir, filename)
+            
+            # Save image
+            cv2.imwrite(image_path, plate_crop)
+            print(f"📸 Saved plate image: {filename}")
+            return image_path
+            
+        except Exception as e:
+            print(f"❌ Error saving plate image: {e}")
+            return None
     
     def run_detection(self):
-        """Main detection loop"""
+        """Main detection loop using WebcamCapture module"""
         print("Starting webcam detection... Press 'q' to quit")
         
-        # Initialize webcam
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            print("Error: Could not open webcam")
-            return
-        
         try:
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    print("Error reading frame")
-                    break
+            # Initialize webcam using the new WebcamCapture module
+            with WebcamCapture(camera_id=0, width=1280, height=720, fps=30) as webcam:
+                print("Webcam initialized successfully")
                 
-                # Detect potential plate regions
-                plate_crops = self.detect_plates(frame)
+                # Print camera info
+                camera_info = webcam.get_camera_info()
+                print(f"Camera FPS: {camera_info.get('target_fps', 'unknown')}")
+                print(f"Resolution: {camera_info.get('resolution', {}).get('width', 'unknown')}x{camera_info.get('resolution', {}).get('height', 'unknown')}")
                 
-                # Process each detected region
-                for crop in plate_crops:
-                    plate_text = self.ocr_plate_text(crop)
+                # Performance monitoring
+                frame_count = 0
+                detection_start_time = time.time()
+                
+                while True:
+                    # Get frame using the webcam capture module
+                    frame = webcam.get_frame()
+                    if frame is None:
+                        print("Error reading frame")
+                        continue
                     
-                    if plate_text:
-                        # Save plate image
-                        image_path = self.save_plate_image(crop, plate_text)
-                        
-                        # Check if plate is in hotlist
-                        is_alert = plate_text in self.hotlist
-                        
-                        # Save to database
-                        self.save_detection(plate_text, image_path, is_alert)
-                        
-                        if is_alert:
-                            print(f"🚨 HOTLIST ALERT: {plate_text}")
-                
-                # Display frame (optional)
-                cv2.imshow('LPR System', frame)
-                
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+                    # Detect potential plate regions
+                    plate_crops = self.detect_plates(frame)
                     
+                    # Process each detected region
+                    for crop in plate_crops:
+                        plate_text = self.ocr_plate_text(crop)
+                        
+                        if plate_text:
+                            # Save plate image (Task 7 implementation)
+                            image_path = self.save_plate_image(crop, plate_text)
+                            
+                            # Skip hotlist checking (Task 6 skipped)
+                            is_alert = False  # No hotlist checking
+                            
+                            # Save to database
+                            self.save_detection(plate_text, image_path, is_alert)
+                            
+                            # Visual confirmation of detection
+                            print(f"🚗 Detected plate: {plate_text}")
+                    
+                    # Display frame (optional)
+                    cv2.imshow('LPR System', frame)
+                    
+                    # Show actual FPS and performance stats in window title
+                    actual_fps = webcam.actual_fps
+                    frame_count += 1
+                    
+                    if actual_fps > 0:
+                        # Get detection and OCR performance stats every 30 frames
+                        if frame_count % 30 == 0:
+                            perf_stats = self.plate_detector.get_performance_stats()
+                            ocr_stats = self.plate_ocr.get_performance_stats()
+                            
+                            detection_time = perf_stats.get('recent_detection_time_ms', 0)
+                            ocr_time = ocr_stats.get('recent_processing_time_ms', 0)
+                            ocr_success_rate = ocr_stats.get('success_rate', 0)
+                            
+                            cv2.setWindowTitle('LPR System', 
+                                             f'LPR System - FPS: {actual_fps:.1f} | Det: {detection_time:.1f}ms | OCR: {ocr_time:.1f}ms')
+                            
+                            # Print performance summary
+                            elapsed = time.time() - detection_start_time
+                            avg_fps = frame_count / elapsed if elapsed > 0 else 0
+                            print(f"Frame {frame_count}: Webcam FPS: {actual_fps:.1f}, "
+                                  f"Avg FPS: {avg_fps:.1f}, Detection: {detection_time:.1f}ms, "
+                                  f"OCR: {ocr_time:.1f}ms, OCR Success: {ocr_success_rate:.1%}")
+                        else:
+                            cv2.setWindowTitle('LPR System', f'LPR System - FPS: {actual_fps:.1f}')
+                    
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                        
         except KeyboardInterrupt:
             print("\nStopping detection...")
+        except Exception as e:
+            print(f"Detection error: {e}")
         finally:
-            cap.release()
             cv2.destroyAllWindows()
+            print("Detection stopped")
 
 def main():
     parser = argparse.ArgumentParser(description='License Plate Recognition System')
